@@ -109,8 +109,8 @@ class _OrderTile extends StatelessWidget {
                 Text('฿${order.total.toStringAsFixed(0)}',
                     style: const TextStyle(fontWeight: FontWeight.bold)),
                 Text('x${order.quantity}',
-                    style: TextStyle(
-                        fontSize: 12, color: Colors.grey.shade600)),
+                    style:
+                        TextStyle(fontSize: 12, color: Colors.grey.shade600)),
               ],
             ),
           ],

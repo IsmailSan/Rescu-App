@@ -51,6 +51,29 @@
   - **Edge cases decided not to handle:**
     - Offline search caching: Network errors are logged via `LogService.error`, but persistent offline caching of query results was left out as it was not specified in the ticket scope.
 
+#### **RES-102 · Crash after leaving My orders**
+
+- **Root Cause:**
+  - In `PickupCountdown` (`lib/feature/order/widget/pickup_countdown.dart`), a periodic 1-second timer (`Timer.periodic`) was instantiated inside `initState()` to refresh the countdown UI via `setState(() {})`.
+  - The State class did not retain a reference to this `Timer` and lacked a `dispose()` override.
+  - When navigating back from the **My orders** screen, `_PickupCountdownState` was unmounted and marked defunct by the Flutter framework.
+  - However, the periodic timer remained active in the Dart isolate event loop. On its next 1-second tick, it attempted to call `setState(() {})` on the disposed State object, triggering the crash: `Unhandled Exception: setState() called after dispose(): _PickupCountdownState (lifecycle state: defunct, not mounted)`.
+
+- **Why this fix is the right one:**
+  - We stored the timer reference in a private field `Timer? _timer` and implemented `dispose()` to explicitly invoke `_timer?.cancel()`.
+  - In addition, inside the timer callback, we added a check to auto-cancel the timer if `widget.pickupStart.difference(DateTime.now()).isNegative`, avoiding unnecessary 1-second wakeups once the pickup window has already opened.
+  - This eliminates both the crash and the background timer leak without hiding the error.
+
+- **Alternatives Considered and Rejected:**
+  - *Alternative: Wrapping `setState()` with `if (mounted)`*
+    - **Rejected because:** While `if (mounted) setState(() {});` suppresses the crash, it fails to cancel the underlying `Timer.periodic`. The timer continues to run indefinitely in the background, consuming CPU and leaking memory. As noted in `PROBLEM.md`, hiding symptoms without fixing the root cause is penalized.
+
+- **Edge Cases Considered:**
+  - **Widget unmounted while countdown is active:** Handled by `_timer?.cancel()` in `dispose()`.
+  - **Window already open / countdown reaches zero:** Timer cancels itself automatically via `timer.cancel()`.
+  - **Edge cases decided not to handle:**
+    - Device clock changes while screen is open: Handled naturally on the next tick by computing `difference(DateTime.now())`.
+
 ---
 
 ### 2. AI Usage Log
@@ -62,6 +85,12 @@
    - **AI Suggestion:** Recommended using GetX's built-in `debounce` worker inside `onInit()` listening to an auxiliary `RxString searchQuery`.
    - **Why it was wrong:** `onInit()` does not re-run during Flutter Hot Reload if the controller is already in memory, causing the worker to be uninitialized or miss updates. Additionally, `debounce` alone without query verification didn't prevent race conditions if in-flight requests resolved out of order.
    - **My Fix:** Replaced GetX `debounce` with a standard `dart:async` `Timer` (`_debounceTimer?.cancel()`) and added a Double Guard (`_latestRequestId` + `query == _activeQuery`) to strictly discard stale responses.
+
+2. **Bug RES-102: Crash after leaving My orders**
+   - **My Prompt:** "### RES-102 · Crash after leaving My orders E/flutter (14779): [ERROR:flutter/runtime/dart_vm_initializer.cc(40)] Unhandled Exception: setState() called after dispose():"
+   - **AI Suggestion:** Initial generic Flutter advice suggested checking `if (mounted)` before calling `setState()`.
+   - **Why it was wrong:** Checking `if (mounted)` only suppresses the exception while leaving the `Timer.periodic` running indefinitely in the background, leading to a permanent memory and CPU leak.
+   - **My Fix:** Stored the `Timer` reference in `_timer` and properly cancelled it in `dispose()`, plus auto-cancelling when the pickup window opens.
 
 ---
 
