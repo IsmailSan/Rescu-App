@@ -74,6 +74,49 @@
   - **Edge cases decided not to handle:**
     - Device clock changes while screen is open: Handled naturally on the next tick by computing `difference(DateTime.now())`.
 
+#### **RES-103 · Requests pile up the longer you browse**
+
+- **Root Cause:**
+  - In `DealDetailsController.onInit()`, a reactive worker `ever(cartService.itemCount, (_) => _recheckAvailability())` was registered to re-check deal stock whenever the cart's item count changes.
+  - `CartService` is registered as an app-wide permanent singleton (`Get.put(CartService(), permanent: true)` in `main.dart`) that persists for the entire lifetime of the app session.
+  - In GetX, `ever(...)` returns a `Worker` object wrapping a `StreamSubscription` to the Rx variable. Because `ever(...)` takes a callback `(_) => _recheckAvailability()`, that callback forms a closure holding a strong reference to `this` (`DealDetailsController`).
+  - `DealDetailsController` never stored the returned `Worker` and did not implement `onClose()`.
+  - When a user navigated away from a deal details screen (popping the route), GetX deleted the route's controller from `GetInstance`. However, because `CartService.itemCount` still held an active `StreamSubscription` closure to the controller, the Dart garbage collector could **never collect** the controller instance.
+  - Each deal screen viewed during the session left behind a zombie `DealDetailsController` listening to `cartService.itemCount`.
+  - Whenever the user tapped "Add to bag" (or cart items changed):
+    1. `cartService.itemCount` updated its value.
+    2. All accumulated `ever` subscriptions fired simultaneously.
+    3. Every controller for every deal opened since session start executed `_recheckAvailability()`, emitting a burst of concurrent `GET /deals/:id` requests.
+
+- **Why this fix is the right one:**
+  - We retain a reference to the worker via `Worker? _cartWorker` in `DealDetailsController`:
+    ```dart
+    _cartWorker = ever(cartService.itemCount, (_) => _recheckAvailability());
+    ```
+  - We implemented `onClose()` in `DealDetailsController` to explicitly cancel the worker:
+    ```dart
+    @override
+    void onClose() {
+      _cartWorker?.dispose();
+      super.onClose();
+    }
+    ```
+  - In addition, inside `_recheckAvailability()`, we added an `if (isClosed) return;` guard after the asynchronous `dealRepo.fetchById(deal.id)` call to ensure that if a fetch was already in-flight when the controller was closed, the controller will not attempt to update its Rx state (`_quantityLeft.value`).
+  - Once the route pops and `onClose()` is called, `_cartWorker.dispose()` cancels the underlying `StreamSubscription`, severing the strong reference from `CartService.itemCount`. This allows Dart GC to reclaim the controller and completely prevents spurious background network calls.
+
+- **Alternatives Considered and Rejected:**
+  - *Alternative 1: Removing the `ever` worker entirely and only checking stock when opening the screen*
+    - **Rejected because:** Real-time stock re-checking on cart change is an intended feature specified in code comments: *"so the details screen never shows stale availability"*. Removing it would degrade UX when the user adds/removes items while on the details screen.
+  - *Alternative 2: Passing a route/deal `tag` to `GetView` and `lazyPut` without disposing the worker*
+    - **Rejected because:** Tags only segregate controller instances in GetX's dependency map; they do NOT cancel stream subscriptions. Every tagged instance subscribed to `CartService.itemCount` would still leak and trigger network requests on every cart change.
+  - *Alternative 3: Moving availability polling into `DealDetailsScreen` State*
+    - **Rejected because:** In this architecture, business logic and data fetching belong in `GetxController`, while `DealDetailsScreen` remains a clean, declarative `GetView`.
+
+- **Edge Cases Considered:**
+  - **Screen closed while stock check is in-flight:** Guarded with `if (isClosed) return;` before updating `_quantityLeft.value`.
+  - **User adds item on the active screen:** `_cartWorker` triggers as intended for the active controller, updating stock immediately.
+  - **Repeated opening and closing of multiple deal screens:** Every closed screen's worker is properly disposed in `onClose()`, ensuring only active screens respond to cart changes.
+
 ---
 
 ### 2. AI Usage Log
@@ -92,12 +135,22 @@
    - **Why it was wrong:** Checking `if (mounted)` only suppresses the exception while leaving the `Timer.periodic` running indefinitely in the background, leading to a permanent memory and CPU leak.
    - **My Fix:** Stored the `Timer` reference in `_timer` and properly cancelled it in `dispose()`, plus auto-cancelling when the pickup window opens.
 
+3. **Bug RES-103: Requests pile up the longer you browse**
+   - **My Prompt:** "Now moving on to RES-103: Requests pile up the longer you browse. After opening several deal pages, tapping Add to bag triggers a burst of GET /deals/:id requests. Please check deal_details_screen.dart and deal_details_controller.dart."
+   - **AI Suggestion:** Analyzed `DealDetailsController` and identified that `ever(cartService.itemCount, ...)` worker is attached to a global permanent service without being tracked or disposed in `onClose()`.
+   - **Why it was accurate:** Correctly identified the exact memory leak mechanism where closure references prevent Dart GC from collecting closed controllers, and provided the clean solution storing `Worker` and calling `_cartWorker?.dispose()` in `onClose()`, with `if (isClosed) return;` guard on async responses.
+
 ---
 
 ### 3. Design Questions
 
 - **Q1: In this codebase, what is the difference between a `GetxController`'s lifecycle and a widget `State`'s lifecycle? Name one bug from Part A that exists because of confusion between the two.**
-  - *(To be answered as other tickets are investigated)*
+  - **Differences:**
+    1. **Lifecycle Owner & Scope:** A widget `State` lifecycle (`initState`, `didUpdateWidget`, `dispose`) is managed directly by the Flutter framework and tied to the widget tree / `Element` hierarchy. When a widget is unmounted from the tree, `dispose()` is synchronously called. In contrast, a `GetxController` lifecycle (`onInit`, `onReady`, `onClose`) is managed by GetX's dependency injection container (`GetInstance`) and routing subsystem (`GetPageRoute` / `Bindings`).
+    2. **Cleanup & Retention:** Unmounting a widget does not automatically dispose its controller unless the controller is registered via route-scoped bindings (without `permanent: true` or `fenix: true`). Furthermore, even if a controller's `onClose()` is called, long-lived or permanent external dependencies (such as `GetxService` or global streams like `CartService`) holding callbacks/subscriptions pointing to the controller will retain the controller in memory via Dart closure scope.
+  - **Bug caused by confusion between the two:**
+    - **RES-103 (`DealDetailsController`):** Developers assumed that closing the `DealDetailsScreen` widget and popping the route would clean up all background activity. However, because the controller subscribed to a permanent singleton (`CartService`) via `ever()` without explicitly saving and disposing the `Worker` in `onClose()`, the controller was retained indefinitely, leading to ghost network requests on every subsequent cart interaction.
+    - *(Another relevant example is **RES-102**, where developers used a widget `State` but treated background asynchronous resources as fire-and-forget, failing to link the background `Timer` lifecycle to the `State.dispose()` lifecycle).*
 
 - **Q2: When does wrapping a large subtree in a single `Obx` hurt you? How do you decide how tightly to scope reactivity?**
   - *(To be answered as other tickets are investigated)*
@@ -109,5 +162,7 @@
 
 ### 4. Time Spent & Next Steps
 
-- **Time Spent on RES-101:** ~30–45 minutes (investigation, reproduction, implementation, and documentation).
-- **Next Steps:** Proceed with the remaining bug tickets in Part A (e.g. RES-102 crash after leaving My Orders).
+- **Time Spent on RES-101:** ~30–40 minutes.
+- **Time Spent on RES-102:** ~20–30 minutes.
+- **Time Spent on RES-103:** ~20–30 minutes.
+- **Next Steps:** Proceed with the remaining bug tickets in Part A (e.g. RES-104 duplicate deals in home feed).
