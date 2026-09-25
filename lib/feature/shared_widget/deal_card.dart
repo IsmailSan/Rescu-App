@@ -17,7 +17,7 @@ class DealCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      clipBehavior: Clip.antiAlias,
+      clipBehavior: Clip.hardEdge,
       color: Colors.white,
       elevation: 0.5,
       child: InkWell(

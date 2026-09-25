@@ -14,100 +14,119 @@ class HomeScreen extends GetView<HomeController> {
 
   @override
   Widget build(BuildContext context) {
-    return Obx(() {
-      final offset = controller.scrollOffset.value;
-      return Scaffold(
-        appBar: AppBar(
-          elevation: offset > 4 ? 2 : 0,
-          shadowColor: Colors.black26,
-          title: const Row(
-            children: [
-              Icon(Icons.eco, color: AppConfig.primaryGreen),
-              SizedBox(width: 8),
-              Text('Rescu',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20)),
-            ],
-          ),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.search),
-              onPressed: () => Get.toNamed(Routes.search),
-            ),
-            IconButton(
-              icon: const Icon(Icons.map_outlined),
-              onPressed: () => Get.toNamed(Routes.map),
-            ),
-            IconButton(
-              icon: const Icon(Icons.receipt_long_outlined),
-              onPressed: () => Get.toNamed(Routes.orders),
-            ),
-            IconButton(
-              icon: const Icon(Icons.shopping_bag_outlined),
-              onPressed: () => Get.toNamed(Routes.cart),
-            ),
-            PopupMenuButton<String>(
-              onSelected: (value) {
-                if (value == 'deeplink') _showDeepLinkDialog(context);
-                if (value == 'analytics') Get.toNamed(Routes.analyticsDebug);
-              },
-              itemBuilder: (context) => const [
-                PopupMenuItem(
-                    value: 'deeplink', child: Text('Simulate deep link…')),
-                PopupMenuItem(
-                    value: 'analytics', child: Text('Analytics debug')),
+    return Scaffold(
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(kToolbarHeight),
+        child: Obx(
+          () => AppBar(
+            elevation: controller.hasScrolled.value ? 2 : 0,
+            shadowColor: Colors.black26,
+            title: const Row(
+              children: [
+                Icon(Icons.eco, color: AppConfig.primaryGreen),
+                SizedBox(width: 8),
+                Text('Rescu',
+                    style:
+                        TextStyle(fontWeight: FontWeight.bold, fontSize: 20)),
               ],
             ),
-          ],
-        ),
-        body: controller.isLoading.value
-            ? ListView(
-                children: const [
-                  ShimmerDealCard(),
-                  ShimmerDealCard(),
-                  ShimmerDealCard(),
-                ],
-              )
-            : SmartRefresher(
-                controller: controller.refreshController,
-                enablePullDown: true,
-                enablePullUp: true,
-                onRefresh: controller.refreshDeals,
-                onLoading: controller.loadMore,
-                child: ListView(
-                  controller: controller.scrollController,
-                  children: [
-                    if (controller.flashDeals.isNotEmpty)
-                      FlashDealsSection(deals: controller.flashDeals),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                      child: Row(
-                        children: [
-                          const Text('Nearby deals',
-                              style: TextStyle(
-                                  fontSize: 17, fontWeight: FontWeight.bold)),
-                          const Spacer(),
-                          FilterChip(
-                            label: const Text('Pickup today'),
-                            selected: controller.todayOnly.value,
-                            onSelected: (v) => controller.todayOnly.value = v,
-                          ),
-                        ],
-                      ),
-                    ),
-                    ...controller.visibleDeals
-                        .map((deal) => DealCard(deal: deal)),
-                    const SizedBox(height: 24),
-                  ],
-                ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.search),
+                onPressed: () => Get.toNamed(Routes.search),
               ),
-        floatingActionButton: offset > 800
-            ? FloatingActionButton.small(
-                onPressed: controller.scrollToTop,
-                child: const Icon(Icons.arrow_upward),
-              )
-            : null,
-      );
-    });
+              IconButton(
+                icon: const Icon(Icons.map_outlined),
+                onPressed: () => Get.toNamed(Routes.map),
+              ),
+              IconButton(
+                icon: const Icon(Icons.receipt_long_outlined),
+                onPressed: () => Get.toNamed(Routes.orders),
+              ),
+              IconButton(
+                icon: const Icon(Icons.shopping_bag_outlined),
+                onPressed: () => Get.toNamed(Routes.cart),
+              ),
+              PopupMenuButton<String>(
+                onSelected: (value) {
+                  if (value == 'deeplink') _showDeepLinkDialog(context);
+                  if (value == 'analytics') Get.toNamed(Routes.analyticsDebug);
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem(
+                      value: 'deeplink', child: Text('Simulate deep link…')),
+                  PopupMenuItem(
+                      value: 'analytics', child: Text('Analytics debug')),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+      body: Obx(() {
+        if (controller.isLoading.value) {
+          return ListView(
+            children: const [
+              ShimmerDealCard(),
+              ShimmerDealCard(),
+              ShimmerDealCard(),
+            ],
+          );
+        }
+        return SmartRefresher(
+          controller: controller.refreshController,
+          enablePullDown: true,
+          enablePullUp: true,
+          onRefresh: controller.refreshDeals,
+          onLoading: controller.loadMore,
+          child: Obx(() {
+            // Snapshot once per rebuild — avoids calling the getter N times
+            // inside itemBuilder (which would re-evaluate .where().toList() per item).
+            final deals = controller.visibleDeals;
+            final flashDeals = controller.flashDeals;
+            return ListView.builder(
+              controller: controller.scrollController,
+              padding: const EdgeInsets.only(bottom: 24),
+              itemCount: deals.length + 2,
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return flashDeals.isNotEmpty
+                      ? FlashDealsSection(deals: flashDeals)
+                      : const SizedBox.shrink();
+                }
+                if (index == 1) {
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                    child: Row(
+                      children: [
+                        const Text('Nearby deals',
+                            style: TextStyle(
+                                fontSize: 17, fontWeight: FontWeight.bold)),
+                        const Spacer(),
+                        Obx(() => FilterChip(
+                              label: const Text('Pickup today'),
+                              selected: controller.todayOnly.value,
+                              onSelected: (v) =>
+                                  controller.todayOnly.value = v,
+                            )),
+                      ],
+                    ),
+                  );
+                }
+                final deal = deals[index - 2];
+                return DealCard(key: ValueKey(deal.id), deal: deal);
+              },
+            );
+          }),
+        );
+      }),
+      floatingActionButton: Obx(() => controller.showScrollToTop.value
+          ? FloatingActionButton.small(
+              onPressed: controller.scrollToTop,
+              child: const Icon(Icons.arrow_upward),
+            )
+          : const SizedBox.shrink()),
+    );
   }
 
   void _showDeepLinkDialog(BuildContext context) {

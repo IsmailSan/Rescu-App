@@ -10,13 +10,24 @@ import '../../shared_widget/the_network_image.dart';
 ///
 /// NOTE: the countdown is currently a static "Ends soon" label — turning it
 /// into a live per-deal countdown is one of the feature tasks in PROBLEM.md.
-class FlashDealsSection extends StatelessWidget {
+class FlashDealsSection extends StatefulWidget {
   final List<DealModel> deals;
 
   const FlashDealsSection({super.key, required this.deals});
 
   @override
+  State<FlashDealsSection> createState() => _FlashDealsSectionState();
+}
+
+class _FlashDealsSectionState extends State<FlashDealsSection>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
   Widget build(BuildContext context) {
+    super.build(context);
+    final deals = widget.deals;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [

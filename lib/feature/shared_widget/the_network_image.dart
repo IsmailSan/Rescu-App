@@ -21,25 +21,32 @@ class TheNetworkImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: borderRadius ?? BorderRadius.zero,
-      child: CachedNetworkImage(
-        imageUrl: url,
+    final image = CachedNetworkImage(
+      imageUrl: url,
+      width: width,
+      height: height,
+      fit: fit,
+      memCacheWidth: 600,
+      memCacheHeight: 400,
+      placeholder: (context, _) => Shimmer.fromColors(
+        baseColor: Colors.grey.shade300,
+        highlightColor: Colors.grey.shade100,
+        child: Container(width: width, height: height, color: Colors.white),
+      ),
+      errorWidget: (context, _, __) => Container(
         width: width,
         height: height,
-        fit: fit,
-        placeholder: (context, _) => Shimmer.fromColors(
-          baseColor: Colors.grey.shade300,
-          highlightColor: Colors.grey.shade100,
-          child: Container(width: width, height: height, color: Colors.white),
-        ),
-        errorWidget: (context, _, __) => Container(
-          width: width,
-          height: height,
-          color: Colors.grey.shade200,
-          child: const Icon(Icons.image_not_supported_outlined),
-        ),
+        color: Colors.grey.shade200,
+        child: const Icon(Icons.image_not_supported_outlined),
       ),
     );
+
+    if (borderRadius != null && borderRadius != BorderRadius.zero) {
+      return ClipRRect(
+        borderRadius: borderRadius!,
+        child: image,
+      );
+    }
+    return image;
   }
 }

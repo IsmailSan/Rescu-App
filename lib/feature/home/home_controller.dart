@@ -16,6 +16,8 @@ class HomeController extends GetxController {
   final isLoading = true.obs;
   final todayOnly = false.obs;
   final scrollOffset = 0.0.obs;
+  final hasScrolled = false.obs;
+  final showScrollToTop = false.obs;
 
   final scrollController = ScrollController();
   final refreshController = RefreshController();
@@ -30,7 +32,7 @@ class HomeController extends GetxController {
 
   List<DealModel> get visibleDeals => todayOnly.value
       ? deals.where((d) => d.pickupWindow.isToday).toList()
-      : deals.toList();
+      : deals;
 
   @override
   void onInit() {
@@ -40,7 +42,15 @@ class HomeController extends GetxController {
   }
 
   void _onScroll() {
-    scrollOffset.value = scrollController.offset;
+    final offset = scrollController.offset;
+    final scrolled = offset > 4;
+    if (hasScrolled.value != scrolled) {
+      hasScrolled.value = scrolled;
+    }
+    final showTop = offset > 800;
+    if (showScrollToTop.value != showTop) {
+      showScrollToTop.value = showTop;
+    }
   }
 
   Future<void> _initialLoad() async {
