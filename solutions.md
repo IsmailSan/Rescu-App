@@ -117,6 +117,43 @@
   - **User adds item on the active screen:** `_cartWorker` triggers as intended for the active controller, updating stock immediately.
   - **Repeated opening and closing of multiple deal screens:** Every closed screen's worker is properly disposed in `onClose()`, ensuring only active screens respond to cart changes.
 
+#### **RES-104 · Duplicate deals in the home feed**
+
+- **Root Cause:**
+  - There was an asynchronous race condition between pagination (`loadMore()`) and feed refresh (`refreshDeals()`) in `HomeController`.
+  - `loadMore()` prematurely mutated the shared state variable `_page++` before making the network request (`dealRepo.fetchDeals(page: _page)`).
+  - When a user scrolled to the bottom (triggering `loadMore()`) and then quickly pulled down to refresh while the network request was in-flight:
+    1. `refreshDeals()` ran concurrently, resetting `_page = 1` and launching a fetch for page 1.
+    2. `refreshDeals()` finished first and reset the feed via `deals.assignAll(res.items)` (displaying page 1).
+    3. The delayed `loadMore()` request completed afterwards and unconditionally appended its items (`deals.addAll(res.items)`).
+    4. Crucially, because `_page` had been overwritten to `1` by `refreshDeals()`, the next time the user reached the bottom of the feed, `loadMore()` incremented `_page` from `1` to `2` and fetched page 2 **again**.
+    5. Appending page 2 a second time caused duplicate deal cards to appear in the home feed (`[Page 1, Page 2, Page 2]`).
+
+- **Why this fix is the right one:**
+  - **Epoch Generation Token (`_epoch`):**
+    We introduced an integer `_epoch` counter that increments on every call to `refreshDeals()`. When `loadMore()` starts, it captures `final currentEpoch = _epoch;`. Upon receiving the API response, it verifies `if (currentEpoch != _epoch || isClosed) return;`. Any pagination request that was in flight prior to a refresh is safely identified as stale and discarded.
+  - **Deferred State Mutation (`targetPage = _page + 1`):**
+    We removed the premature `_page++`. The target page is computed locally (`targetPage = _page + 1`), and `_page` is only updated after the response is received and verified to belong to the active epoch. This also completely removes the brittle `_page--` in error handling.
+  - **Mutual Exclusion & State Cleanliness:**
+    Added `_isRefreshing` flag to prevent `loadMore()` from initiating while a refresh is in progress (`if (_isFetchingMore || _isRefreshing) return;`), and guaranteed that `_isFetchingMore` and `_isRefreshing` are always cleanly reset in `finally` blocks.
+  - **Defensive Deduplication:**
+    When appending new items in `loadMore()`, items already present in `deals` are filtered out via `deals.map((d) => d.id).toSet()`. This protects against catalog drift (e.g. when deals shift across page boundaries on the backend).
+  - **Footer State Reset:**
+    Calling `refreshController.resetNoData()` on refresh ensures that if a user previously reached the end of the catalog, the pull-to-refresh action re-enables pagination for the new dataset.
+
+- **Alternatives Considered and Rejected:**
+  - *Alternative 1: Only filtering duplicates via `toSet()` on `deals.addAll()`*
+    - **Rejected because:** Deduplication alone is merely a symptom band-aid that ignores the root race condition. If an old page 3 request arrives after page 1 refresh, deduplicating IDs would result in a feed showing Page 1 immediately followed by Page 3 (skipping Page 2), and `_page` would remain desynchronized.
+  - *Alternative 2: Disabling pull-to-refresh while `loadMore` is running*
+    - **Rejected because:** Pull-to-refresh is a primary user recovery mechanism. If a pagination request hangs on a poor network connection, users expect pull-to-refresh to immediately abort/supersede pending requests and reload from the top.
+
+- **Edge Cases Considered:**
+  - **Pull-to-refresh while `loadMore` is in flight:** Stale `loadMore` response is discarded via epoch check; feed is cleanly populated with page 1.
+  - **`loadMore` triggered while refresh is in flight:** Prevented by `_isRefreshing` guard.
+  - **Network error during `loadMore`:** `_page` is not corrupted because it was not prematurely mutated; `refreshController.loadFailed()` is called.
+  - **Reaching the last page followed by pull-to-refresh:** `resetNoData()` resets footer so pagination can resume if new items appear.
+  - **Controller closed while request is in flight:** Guarded by `isClosed` check before updating Rx variables.
+
 ---
 
 ### 2. AI Usage Log
@@ -139,6 +176,11 @@
    - **My Prompt:** "Now moving on to RES-103: Requests pile up the longer you browse. After opening several deal pages, tapping Add to bag triggers a burst of GET /deals/:id requests. Please check deal_details_screen.dart and deal_details_controller.dart."
    - **AI Suggestion:** Analyzed `DealDetailsController` and identified that `ever(cartService.itemCount, ...)` worker is attached to a global permanent service without being tracked or disposed in `onClose()`.
    - **Why it was accurate:** Correctly identified the exact memory leak mechanism where closure references prevent Dart GC from collecting closed controllers, and provided the clean solution storing `Worker` and calling `_cartWorker?.dispose()` in `onClose()`, with `if (isClosed) return;` guard on async responses.
+
+4. **Bug RES-104: Duplicate deals in the home feed**
+   - **My Prompt:** "You can check ### RES-104 · Duplicate deals in the home feed in Problem.md and these file home_screen and home_controller.dart"
+   - **AI Suggestion:** Analyzed the concurrency race condition between `loadMore()` and `refreshDeals()`, identifying that `_page` was mutated prematurely and corrupted when refresh was triggered while pagination was in-flight. Suggested creating a unit test to reliably reproduce the race condition, and designed a solution using epoch generation tokens (`_epoch`), deferred page mutation (`targetPage = _page + 1`), mutual exclusion, and defensive ID deduplication.
+   - **Why it was accurate:** The automated test (`test/home_controller_test.dart`) concretely demonstrated duplicate cards (`[10..14, 20..24, 20..24]`) before the fix, and verified that the epoch-based fix reliably discarded stale pagination responses when overtaken by refresh, passing all test assertions and maintaining data integrity.
 
 ---
 
@@ -165,4 +207,5 @@
 - **Time Spent on RES-101:** ~30–40 minutes.
 - **Time Spent on RES-102:** ~20–30 minutes.
 - **Time Spent on RES-103:** ~20–30 minutes.
-- **Next Steps:** Proceed with the remaining bug tickets in Part A (e.g. RES-104 duplicate deals in home feed).
+- **Time Spent on RES-104:** ~40–50 minutes.
+- **Next Steps:** Proceed with the remaining bug tickets in Part A (e.g. RES-105 home feed jank & memory growth).

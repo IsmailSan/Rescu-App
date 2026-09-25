@@ -23,6 +23,8 @@ class HomeController extends GetxController {
   int _page = 1;
   int _totalPages = 1;
   bool _isFetchingMore = false;
+  bool _isRefreshing = false;
+  int _epoch = 0;
 
   bool get hasMore => _page < _totalPages;
 
@@ -56,31 +58,65 @@ class HomeController extends GetxController {
   }
 
   Future<void> refreshDeals() async {
-    _page = 1;
-    final res = await dealRepo.fetchDeals(page: 1);
-    _totalPages = res.totalPages;
-    deals.assignAll(res.items);
-    refreshController.refreshCompleted();
+    final currentEpoch = ++_epoch;
+    _isRefreshing = true;
+    _isFetchingMore = false;
+
+    try {
+      final res = await dealRepo.fetchDeals(page: 1);
+      if (currentEpoch != _epoch || isClosed) return;
+
+      _page = 1;
+      _totalPages = res.totalPages;
+      deals.assignAll(res.items);
+      refreshController.resetNoData();
+      refreshController.refreshCompleted();
+    } catch (e) {
+      if (currentEpoch == _epoch && !isClosed) {
+        refreshController.refreshFailed();
+      }
+    } finally {
+      if (currentEpoch == _epoch) {
+        _isRefreshing = false;
+      }
+    }
   }
 
   Future<void> loadMore() async {
-    if (_isFetchingMore) return;
+    if (_isFetchingMore || _isRefreshing) return;
     if (!hasMore) {
       refreshController.loadNoData();
       return;
     }
+
     _isFetchingMore = true;
-    _page++;
+    final currentEpoch = _epoch;
+    final targetPage = _page + 1;
+
     try {
-      final res = await dealRepo.fetchDeals(page: _page);
+      final res = await dealRepo.fetchDeals(page: targetPage);
+      if (currentEpoch != _epoch || isClosed) return;
+
+      _page = targetPage;
       _totalPages = res.totalPages;
-      deals.addAll(res.items);
+      final existingIds = deals.map((d) => d.id).toSet();
+      final newItems =
+          res.items.where((d) => !existingIds.contains(d.id)).toList();
+      deals.addAll(newItems);
+
+      if (_page >= _totalPages) {
+        refreshController.loadNoData();
+      } else {
+        refreshController.loadComplete();
+      }
     } catch (e) {
       LogService.error('loadMore failed', e);
-      _page--;
+      if (currentEpoch == _epoch && !isClosed) {
+        refreshController.loadFailed();
+      }
+    } finally {
+      _isFetchingMore = false;
     }
-    _isFetchingMore = false;
-    refreshController.loadComplete();
   }
 
   void scrollToTop() {
