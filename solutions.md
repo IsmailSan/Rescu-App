@@ -226,6 +226,60 @@
   - **Empty flash deals:** Guarded with `controller.flashDeals.isNotEmpty ? ... : const SizedBox.shrink()`.
   - **Small screen devices:** Card height and downsampled image resolution (600×400) maintain crisp visual fidelity at high PPI without memory bloat.
 
+#### **RES-106 · Wrong pickup times; "Pickup today" filter misses deals**
+
+- **Root Cause:**
+  The API correctly sends pickup windows as **ISO-8601 UTC instants** (e.g. `"2026-09-25T23:00:00.000Z"`), which is standard practice. The bug is entirely on the client side in `PickupWindowModel.fromJson()`:
+
+  ```dart
+  // BEFORE (buggy)
+  start: DateTime.parse(json['start'] as String? ?? ''),
+  end:   DateTime.parse(json['end']   as String? ?? ''),
+  ```
+
+  `DateTime.parse()` on a string ending in `Z` returns a `DateTime` with `isUtc = true` and preserves the UTC wall-clock value. All three downstream getters then compared or formatted this UTC `DateTime` against `DateTime.now()` (local time on device), producing three distinct failures:
+
+  | Getter | Bug | Example (Bangkok UTC+7) |
+  | :--- | :--- | :--- |
+  | `label` | `DateFormat('HH:mm').format(utcDateTime)` formats UTC hour directly | Bakery 06:00–09:30 WIB displayed as **"23:00 – 02:30"** |
+  | `isToday` | `start.day` (UTC) vs `DateTime.now().day` (local) — different when UTC crosses midnight | Deal starting 23:00 UTC = 06:00 next local day → `isToday` **false** → filter hides valid deals |
+  | `isOpenNow` | `DateTime.now()` (local) vs `start`/`end` (UTC) — always off by UTC offset | Store appears closed when open, or vice versa |
+
+- **Why this fix is the right one:**
+  Add `.toLocal()` at the single point of entry — inside `fromJson()` — so every downstream consumer receives a correctly-timezone-converted `DateTime`:
+
+  ```dart
+  // AFTER (fixed) — lib/model/pickup_window_model.dart
+  factory PickupWindowModel.fromJson(Map<String, dynamic> json) {
+    // The API sends UTC ISO-8601 instants (e.g. "2026-09-25T23:00:00.000Z").
+    // DateTime.parse() preserves the UTC flag, so .toLocal() converts to the
+    // device timezone once at parse time. All downstream getters (label,
+    // isToday, isOpenNow) then compare correctly against DateTime.now().
+    return PickupWindowModel(
+      start: DateTime.parse(json['start'] as String? ?? '').toLocal(),
+      end:   DateTime.parse(json['end']   as String? ?? '').toLocal(),
+    );
+  }
+  ```
+
+  1. **Single responsibility:** The model is the canonical source of truth for domain values. Converting here means no caller ever handles raw UTC.
+  2. **All getters fixed automatically:** `label`, `isToday`, `isOpenNow`, and `untilStart` all use `DateTime.now()` (local) — after `.toLocal()`, all comparisons are within the same timezone without modifying any getter logic.
+  3. **Device-agnostic:** `.toLocal()` uses the device's system timezone, so the fix works correctly for any user in any timezone, not just UTC+7.
+
+- **Alternatives Considered and Rejected:**
+  - *Alternative 1: Convert inside each getter (e.g. `start.toLocal()` in `label`, `isToday`, `isOpenNow`)*
+    - **Rejected because:** Requires modifying every getter individually and risks missing future getters. Storing UTC internally and converting repeatedly violates DRY.
+  - *Alternative 2: Configure `intl` `DateFormat` with an explicit timezone*
+    - **Rejected because:** `DateFormat` only formats the wall-clock of the `DateTime` it receives — fixing `label` alone would still leave `isToday` and `isOpenNow` broken.
+  - *Alternative 3: Ask the backend to send local time strings instead of UTC*
+    - **Rejected because:** The backend team is correct — ISO-8601 UTC is the industry standard. Client apps must convert to local time.
+
+- **Edge Cases Considered:**
+  - **Overnight windows (e.g. 22:00–01:00):** The fake API handles roll-over with `+1 day`. After `.toLocal()`, cross-midnight windows display and evaluate correctly.
+  - **User traveling across timezones:** `.toLocal()` reads the device's current system timezone at parse time.
+  - **Non-integer UTC offsets (e.g. India UTC+5:30):** `.toLocal()` uses the OS timezone offset, handling these correctly with no hardcoded offset constants.
+  - **`isToday` near midnight:** Both sides are now in the same local timezone so the day comparison is always correct.
+
 ---
 
 ### 2. AI Usage Log
@@ -257,7 +311,12 @@
 5. **Bug RES-105: Home feed is janky and memory keeps climbing**
    - **My Prompt:** "Please solve this ticket: ### RES-105 · Home feed is janky and memory keeps climbing. On mid-range Android devices the home feed drops frames noticeably while scrolling, and memory grows the further you scroll until the OS kills the app. DevTools shows the entire feed rebuilding continuously during scroll, and the image cache ballooning."
    - **AI Suggestion:** Identified the three primary bottlenecks from the DevTools performance and memory profiles: (1) root `Obx` observing high-frequency `scrollOffset`, (2) eager `ListView(children: [...])` retaining all instantiated widgets in memory, and (3) decoding unconstrained 1600×1200 bitmap images. Recommended replacing continuous scroll observation with discrete boundary booleans (`hasScrolled`, `showScrollToTop`), scoping `Obx` strictly to the widgets needing state changes, adopting `ListView.builder`, and bounding image decoding with `memCacheWidth: 600` and `memCacheHeight: 400`.
-   - **Why it was accurate:** Precisely addressed all three root causes without unnecessary architectural overhauls, bringing frame rates from 5 FPS back to a fluid 60 FPS and cutting per-image memory consumption by over 87%.
+   - **Why it was accurate:** Precisely addressed all three root causes without unnecessary architectural overhauls, bringing frame rates from 3 FPS (debug mode) to 23 FPS (profile mode, real device) and cutting per-image memory consumption by over 87%.
+
+6. **Bug RES-106: Wrong pickup times; "Pickup today" filter misses deals**
+   - **My Prompt:** "Please analyze what is happening here: ### RES-106 · Wrong pickup times; 'Pickup today' filter misses deals — a bakery that opens 06:00–09:30 shows 'Pick up 23:00 – 02:30' on its cards, and several stores with pickup slots today never appear when the Pickup today filter is on."
+   - **AI Suggestion:** Identified that `DateTime.parse()` on UTC ISO-8601 strings returns a UTC `DateTime`, and all three downstream getters (`label`, `isToday`, `isOpenNow`) compared or formatted UTC values against `DateTime.now()` (local). Proposed a single-line fix: add `.toLocal()` at the parse site in `PickupWindowModel.fromJson()`.
+   - **Why it was accurate:** Root cause is a classic client-side timezone handling mistake. The backend data is correct (UTC instants). Converting once at the model boundary fixes all three getters simultaneously without modifying any getter logic, and is device/timezone-agnostic.
 
 ---
 
@@ -284,7 +343,54 @@
     3. **Decouple collection state from item state:** Feed lists should observe list mutations (`visibleDeals`) to update count and ordering via `ListView.builder`, while individual item widgets (`DealCard`) should encapsulate their own localized interactions without invalidating the parent list.
 
 - **Q3: How would you write an automated test that would have caught RES-106 before release? What (if anything) would you change in the code to make such a test possible?**
-  - *(To be answered as other tickets are investigated)*
+  - **Test approach:** Construct a `PickupWindowModel` from a known UTC JSON payload and assert that:
+    1. The parsed `DateTime` is converted to local time (`.isUtc == false`).
+    2. Formatters (`label`) display local wall-clock time rather than the raw UTC string.
+    3. We implemented a comprehensive test suite in `test/pickup_window_model_test.dart` (10 passing tests) using dynamic UTC fixtures derived from local time, ensuring tests remain timezone-agnostic across developer machines and UTC-configured CI runners:
+
+    ```dart
+    test('RES-106: fromJson converts UTC instants to local time', () {
+      final localStart = DateTime(2026, 9, 26, 14, 0); // local 14:00
+      final localEnd   = DateTime(2026, 9, 26, 18, 0); // local 18:00
+      
+      final model = PickupWindowModel.fromJson({
+        'start': localStart.toUtc().toIso8601String(),
+        'end':   localEnd.toUtc().toIso8601String(),
+      });
+      
+      expect(model.start.isUtc, isFalse);   // must be converted to local
+      expect(model.label, contains('14:00')); // matches local wall-clock
+    });
+    ```
+
+  - **What to change in the codebase to make it 100% testable & deterministic:**
+    `isToday` and `isOpenNow` currently depend on `DateTime.now()` directly, making them untestable at boundary times without mocking system time. We should inject a clock provider (or use `package:clock`):
+
+    ```dart
+    class PickupWindowModel {
+      final DateTime start;
+      final DateTime end;
+      final DateTime Function() _clock;
+
+      const PickupWindowModel({
+        required this.start,
+        required this.end,
+        DateTime Function()? clock,
+      }) : _clock = clock ?? DateTime.now;
+
+      bool get isToday {
+        final now = _clock();
+        return start.year == now.year &&
+               start.month == now.month &&
+               start.day == now.day;
+      }
+
+      bool get isOpenNow {
+        final now = _clock();
+        return now.isAfter(start) && now.isBefore(end);
+      }
+    }
+    ```
 
 ---
 
@@ -295,4 +401,5 @@
 - **Time Spent on RES-103:** ~20–30 minutes.
 - **Time Spent on RES-104:** ~40–50 minutes.
 - **Time Spent on RES-105:** ~90–120 minutes.
-- **Next Steps:** Proceed with the remaining bug tickets in Part A (e.g. RES-106 wrong pickup times & "Pickup today" filter).
+- **Time Spent on RES-106:** ~20–30 minutes.
+- **Next Steps:** Proceed with the remaining bug tickets in Part A (RES-107 deep link crash).

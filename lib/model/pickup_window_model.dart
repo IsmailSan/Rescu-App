@@ -8,9 +8,13 @@ class PickupWindowModel {
   const PickupWindowModel({required this.start, required this.end});
 
   factory PickupWindowModel.fromJson(Map<String, dynamic> json) {
+    // The API sends UTC ISO-8601 instants (e.g. "2026-09-25T23:00:00.000Z").
+    // DateTime.parse() preserves the UTC flag, so .toLocal() converts to the
+    // device timezone once at parse time. All downstream getters (label,
+    // isToday, isOpenNow) then compare correctly against DateTime.now().
     return PickupWindowModel(
-      start: DateTime.parse(json['start'] as String? ?? ''),
-      end: DateTime.parse(json['end'] as String? ?? ''),
+      start: DateTime.parse(json['start'] as String? ?? '').toLocal(),
+      end: DateTime.parse(json['end'] as String? ?? '').toLocal(),
     );
   }
 

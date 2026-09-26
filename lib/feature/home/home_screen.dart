@@ -80,13 +80,13 @@ class HomeScreen extends GetView<HomeController> {
           onRefresh: controller.refreshDeals,
           onLoading: controller.loadMore,
           child: Obx(() {
-            // Snapshot once per rebuild — avoids calling the getter N times
-            // inside itemBuilder (which would re-evaluate .where().toList() per item).
             final deals = controller.visibleDeals;
             final flashDeals = controller.flashDeals;
             return ListView.builder(
               controller: controller.scrollController,
               padding: const EdgeInsets.only(bottom: 24),
+              cacheExtent: 1500,
+              addAutomaticKeepAlives: false,
               itemCount: deals.length + 2,
               itemBuilder: (context, index) {
                 if (index == 0) {
@@ -106,8 +106,7 @@ class HomeScreen extends GetView<HomeController> {
                         Obx(() => FilterChip(
                               label: const Text('Pickup today'),
                               selected: controller.todayOnly.value,
-                              onSelected: (v) =>
-                                  controller.todayOnly.value = v,
+                              onSelected: (v) => controller.todayOnly.value = v,
                             )),
                       ],
                     ),
@@ -148,9 +147,8 @@ class HomeScreen extends GetView<HomeController> {
               final uri = Uri.tryParse(textController.text.trim());
               Get.back();
               if (uri == null) return;
-              final route = uri.hasQuery
-                  ? '${uri.path}?${uri.query}'
-                  : uri.path;
+              final route =
+                  uri.hasQuery ? '${uri.path}?${uri.query}' : uri.path;
               Get.toNamed(route);
             },
             child: const Text('Open'),

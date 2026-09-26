@@ -30,6 +30,8 @@ void main() {
     expect(deal.rating, isNull);
     expect(deal.discountPercent, 67);
     expect(deal.isFlashSale, isFalse);
-    expect(deal.pickupWindow.start.isUtc, isTrue);
+    // RES-106 fix: fromJson must convert UTC instants to local time.
+    // Before fix: .isUtc was true (bug). After fix: .isUtc is false.
+    expect(deal.pickupWindow.start.isUtc, isFalse);
   });
 }
