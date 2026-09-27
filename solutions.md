@@ -278,7 +278,52 @@
   - **Overnight windows (e.g. 22:00–01:00):** The fake API handles roll-over with `+1 day`. After `.toLocal()`, cross-midnight windows display and evaluate correctly.
   - **User traveling across timezones:** `.toLocal()` reads the device's current system timezone at parse time.
   - **Non-integer UTC offsets (e.g. India UTC+5:30):** `.toLocal()` uses the OS timezone offset, handling these correctly with no hardcoded offset constants.
-  - **`isToday` near midnight:** Both sides are now in the same local timezone so the day comparison is always correct.
+
+#### **RES-107 · Deep link opens to a crash**
+
+- **Root Cause:**
+  When navigating from within the app (e.g. tapping a card on the home feed or flash rail), `DealCard` passes the instantiated `DealModel` through memory arguments:
+  ```dart
+  Get.toNamed(Routes.dealRoute(deal.id, source: source), arguments: deal);
+  ```
+  `DealDetailsController.onInit()` unconditionally expected this object to be present:
+  ```dart
+  deal = Get.arguments as DealModel; // throws when Get.arguments is null
+  ```
+  However, deep links (such as push notification clicks, ADB intents, or `rescu://open/deal?id=42&source=push`) pass navigation parameters strictly via URL query parameters (`?id=42&source=push`) without populating in-memory `arguments`. Because `Get.arguments` is `null`, the cast threw an unhandled runtime exception:
+  `type 'Null' is not a subtype of type 'DealModel' in type cast`.
+
+- **Fix Applied:**
+  1. In `lib/feature/deal/deal_details_controller.dart`:
+     - Changed `deal` from a `late final DealModel` field to an observable `_deal = Rxn<DealModel>()` with public getter `DealModel? get deal => _deal.value;`.
+     - Added `_isLoading = false.obs` and `_errorMessage = RxnString()`.
+     - In `onInit()`, implemented a dual-path hydration strategy:
+       - **In-app navigation:** If `Get.arguments is DealModel`, synchronously assign `_deal.value` immediately. This ensures zero loading flicker or visual delay when opening from the home feed.
+       - **Deep link navigation:** If `Get.arguments == null`, read `Get.parameters['id']`, parse the integer deal ID, set `_isLoading.value = true`, and asynchronously load the deal from `dealRepo.fetchById(id)`.
+     - Consolidated post-load setup (`_quantityLeft`, `analytics.logEvent`, and `_cartWorker`) into a shared `_onDealLoaded(DealModel)` method so all lifecycle features operate identically regardless of navigation source.
+     - Protected async completion with `if (isClosed) return;` guards to prevent state mutation if the user leaves before the network request finishes.
+  2. In `lib/feature/deal/deal_details_screen.dart`:
+     - Wrapped the root view in `Obx`.
+     - If `controller.isLoading` is true, displays a centered `CircularProgressIndicator(color: AppConfig.primaryGreen)`.
+     - If `controller.deal == null`, displays a clean fallback view with `controller.errorMessage`.
+     - Once `deal` is populated, renders the complete, interactive deal details screen.
+  3. Added automated unit tests in `test/deal_details_controller_test.dart` (3 passing tests) covering in-app synchronous loading, asynchronous deep link hydration with mock repository, and invalid ID error handling.
+
+- **Why this Fix is Correct:**
+  - Satisfies the ticket requirement: *"the link must land the user on a fully working deal page (deal 42 exists in the catalog). Showing an error/fallback screen instead is not an acceptable resolution for this ticket."*
+  - Uses existing repository method `dealRepo.fetchById(id)` without creating duplicate endpoint logic.
+  - Zero regression for standard in-app navigation: feed card clicks continue to render synchronously without showing a spinner.
+
+- **Alternatives Considered & Rejected:**
+  - *Alternative 1: Prefetch entire catalog in memory and look up synchronously*
+    - **Rejected because:** Fails on cold starts where a push notification launches the app directly into `/deal` before home feed items are fetched. Also wastes memory and battery on unneeded catalog prefetching.
+  - *Alternative 2: Encode the entire deal JSON into the deep link URL*
+    - **Rejected because:** URLs have character limits; push notification payloads should remain lightweight; and embedding deal data into static URLs guarantees stale inventory and pricing.
+
+- **Edge Cases Considered:**
+  - **Cold start via deep link:** The app initializes root services, and `DealDetailsBinding` injects dependencies on demand before fetching deal 42.
+  - **Rapid back navigation while loading:** `if (isClosed) return;` prevents memory leaks or calls to disposed controller properties.
+  - **Invalid or non-existent deal ID:** Displays a clear user message instead of crashing the application.
 
 ---
 
@@ -317,6 +362,11 @@
    - **My Prompt:** "Please analyze what is happening here: ### RES-106 · Wrong pickup times; 'Pickup today' filter misses deals — a bakery that opens 06:00–09:30 shows 'Pick up 23:00 – 02:30' on its cards, and several stores with pickup slots today never appear when the Pickup today filter is on."
    - **AI Suggestion:** Identified that `DateTime.parse()` on UTC ISO-8601 strings returns a UTC `DateTime`, and all three downstream getters (`label`, `isToday`, `isOpenNow`) compared or formatted UTC values against `DateTime.now()` (local). Proposed a single-line fix: add `.toLocal()` at the parse site in `PickupWindowModel.fromJson()`.
    - **Why it was accurate:** Root cause is a classic client-side timezone handling mistake. The backend data is correct (UTC instants). Converting once at the model boundary fixes all three getters simultaneously without modifying any getter logic, and is device/timezone-agnostic.
+
+7. **Bug RES-107: Deep link opens to a crash**
+   - **My Prompt:** "When testing the deep link, it crashes with: type 'Null' is not a subtype of type 'DealModel' in type cast. What is the solution for this?"
+   - **AI Suggestion:** Identified that in-app navigation passes `DealModel` via in-memory `arguments`, whereas deep links (`rescu://open/deal?id=42&source=push`) pass parameters via query strings (`?id=42`), leaving `Get.arguments` as `null`. Recommended making `deal` reactive/nullable (`Rxn<DealModel>`), adding `isLoading` state, and implementing a dual-path hydration pattern: instantly use `Get.arguments` if present, or asynchronously fetch via `dealRepo.fetchById(id)` if null.
+   - **Why it was accurate:** Perfectly addresses both the in-app experience (synchronous, instant, zero flicker) and deep link requirements (asynchronous fetch landing on a fully working deal page as required by PROBLEM.md), accompanied by an automated test suite verifying both navigation pathways.
 
 ---
 
@@ -402,4 +452,7 @@
 - **Time Spent on RES-104:** ~40–50 minutes.
 - **Time Spent on RES-105:** ~90–120 minutes.
 - **Time Spent on RES-106:** ~20–30 minutes.
-- **Next Steps:** Proceed with the remaining bug tickets in Part A (RES-107 deep link crash).
+- **Time Spent on RES-107:** ~20–30 minutes.
+- **Next Steps:** All Part A bug tickets (RES-101 through RES-107) are completely solved and verified with unit tests. Proceed with **Part B — Features**:
+  1. **F-1: Live flash-sale countdowns** (smooth countdowns scoped to text widgets, expired state handling, and cart removal).
+  2. **F-2: Impression tracking** (≥50% visibility for ≥1 continuous second via `AnalyticsService`).

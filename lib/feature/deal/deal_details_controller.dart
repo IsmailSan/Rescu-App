@@ -17,7 +17,14 @@ class DealDetailsController extends GetxController {
     required this.analytics,
   });
 
-  late final DealModel deal;
+  final _deal = Rxn<DealModel>();
+  DealModel? get deal => _deal.value;
+
+  final _isLoading = false.obs;
+  bool get isLoading => _isLoading.value;
+
+  final _errorMessage = RxnString();
+  String? get errorMessage => _errorMessage.value;
 
   final _quantityLeft = RxnInt();
   int? get quantityLeft => _quantityLeft.value;
@@ -27,14 +34,50 @@ class DealDetailsController extends GetxController {
   @override
   void onInit() {
     super.onInit();
-    deal = Get.arguments as DealModel;
-    _quantityLeft.value = deal.quantityLeft;
+    _initDeal();
+  }
+
+  Future<void> _initDeal() async {
+    // 1. If passed via in-memory arguments (e.g. from home feed)
+    if (Get.arguments is DealModel) {
+      final passedDeal = Get.arguments as DealModel;
+      _deal.value = passedDeal;
+      _onDealLoaded(passedDeal);
+      return;
+    }
+
+    // 2. If opened via deep link (arguments is null), parse id from parameters
+    final idParam = Get.parameters['id'];
+    final id = int.tryParse(idParam ?? '');
+    if (id != null) {
+      _isLoading.value = true;
+      try {
+        final fetched = await dealRepo.fetchById(id);
+        if (isClosed) return;
+        _deal.value = fetched;
+        _onDealLoaded(fetched);
+      } catch (e) {
+        if (isClosed) return;
+        _errorMessage.value = 'Could not load deal #$id';
+      } finally {
+        if (!isClosed) {
+          _isLoading.value = false;
+        }
+      }
+    } else {
+      _errorMessage.value = 'Invalid deal parameter';
+    }
+  }
+
+  void _onDealLoaded(DealModel loadedDeal) {
+    _quantityLeft.value = loadedDeal.quantityLeft;
     analytics.logEvent('deal_details_view', {
-      'deal_id': deal.id,
+      'deal_id': loadedDeal.id,
       'source': Get.parameters['source'] ?? 'unknown',
     });
     // Whenever the cart changes, re-check this deal's remaining stock so the
     // details screen never shows stale availability.
+    _cartWorker?.dispose();
     _cartWorker = ever(cartService.itemCount, (_) => _recheckAvailability());
   }
 
@@ -45,17 +88,21 @@ class DealDetailsController extends GetxController {
   }
 
   Future<void> _recheckAvailability() async {
-    LogService.log('re-checking availability for deal ${deal.id}');
-    final fresh = await dealRepo.fetchById(deal.id);
+    final currentDeal = _deal.value;
+    if (currentDeal == null) return;
+    LogService.log('re-checking availability for deal ${currentDeal.id}');
+    final fresh = await dealRepo.fetchById(currentDeal.id);
     if (isClosed) return;
     _quantityLeft.value = fresh.quantityLeft;
   }
 
   void addToCart() {
-    cartService.add(deal);
+    final currentDeal = _deal.value;
+    if (currentDeal == null) return;
+    cartService.add(currentDeal);
     Get.snackbar(
       'Added to bag',
-      '${deal.name} — pick up ${deal.pickupWindow.label}',
+      '${currentDeal.name} — pick up ${currentDeal.pickupWindow.label}',
       snackPosition: SnackPosition.BOTTOM,
       duration: const Duration(seconds: 2),
     );
