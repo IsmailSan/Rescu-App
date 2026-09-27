@@ -31,6 +31,8 @@ class DealDetailsController extends GetxController {
 
   Worker? _cartWorker;
 
+  final isExpired = false.obs;
+
   @override
   void onInit() {
     super.onInit();
@@ -71,6 +73,7 @@ class DealDetailsController extends GetxController {
 
   void _onDealLoaded(DealModel loadedDeal) {
     _quantityLeft.value = loadedDeal.quantityLeft;
+    isExpired.value = loadedDeal.isExpired;
     analytics.logEvent('deal_details_view', {
       'deal_id': loadedDeal.id,
       'source': Get.parameters['source'] ?? 'unknown',
@@ -79,6 +82,10 @@ class DealDetailsController extends GetxController {
     // details screen never shows stale availability.
     _cartWorker?.dispose();
     _cartWorker = ever(cartService.itemCount, (_) => _recheckAvailability());
+  }
+
+  void markExpired() {
+    isExpired.value = true;
   }
 
   @override
@@ -99,12 +106,26 @@ class DealDetailsController extends GetxController {
   void addToCart() {
     final currentDeal = _deal.value;
     if (currentDeal == null) return;
+    if (isExpired.value || currentDeal.isExpired) {
+      isExpired.value = true;
+      if (Get.context != null && Get.key.currentState?.overlay != null) {
+        Get.snackbar(
+          'Deal expired',
+          'This flash sale has ended and can no longer be added to your bag.',
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 2),
+        );
+      }
+      return;
+    }
     cartService.add(currentDeal);
-    Get.snackbar(
-      'Added to bag',
-      '${currentDeal.name} — pick up ${currentDeal.pickupWindow.label}',
-      snackPosition: SnackPosition.BOTTOM,
-      duration: const Duration(seconds: 2),
-    );
+    if (Get.context != null && Get.key.currentState?.overlay != null) {
+      Get.snackbar(
+        'Added to bag',
+        '${currentDeal.name} — pick up ${currentDeal.pickupWindow.label}',
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 2),
+      );
+    }
   }
 }

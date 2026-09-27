@@ -12,7 +12,28 @@ class CartService extends GetxService {
   final items = <CartItemModel>[].obs;
   final itemCount = 0.obs;
 
+  void _showNotice(String title, String message, {Duration duration = const Duration(seconds: 2)}) {
+    if (Get.context != null && Get.key.currentState?.overlay != null) {
+      Get.snackbar(
+        title,
+        message,
+        snackPosition: SnackPosition.BOTTOM,
+        duration: duration,
+      );
+    }
+  }
+
   void add(DealModel deal) {
+    if (deal.isExpired) {
+      LogService.log('cart: cannot add expired deal ${deal.id}');
+      _showNotice(
+        'Deal expired',
+        'This flash sale has ended and can no longer be added to your bag.',
+        duration: const Duration(seconds: 2),
+      );
+      return;
+    }
+
     final existing = items.firstWhereOrNull((i) => i.deal.id == deal.id);
     if (existing != null) {
       if (existing.quantity >= deal.quantityLeft) {
@@ -23,6 +44,29 @@ class CartService extends GetxService {
       items.refresh();
     } else {
       items.add(CartItemModel(deal: deal));
+    }
+    _recount();
+  }
+
+  /// Removes any flash sale deals that have expired while in the bag,
+  /// presenting a visible notice to the user.
+  void removeExpiredDeals() {
+    if (items.isEmpty) return;
+    final now = DateTime.now();
+    final expiredItems = items.where((item) {
+      final endsAt = item.deal.flashSaleEndsAt;
+      return endsAt != null && now.isAfter(endsAt);
+    }).toList();
+
+    if (expiredItems.isEmpty) return;
+
+    for (final item in expiredItems) {
+      items.removeWhere((i) => i.deal.id == item.deal.id);
+      _showNotice(
+        'Deal expired',
+        '${item.deal.name} was removed from your bag as the flash sale ended.',
+        duration: const Duration(seconds: 3),
+      );
     }
     _recount();
   }

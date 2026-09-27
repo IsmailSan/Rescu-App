@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../app_config.dart';
+import '../shared_widget/countdown_text.dart';
 import '../shared_widget/the_network_image.dart';
 import 'deal_details_controller.dart';
 
@@ -59,6 +60,63 @@ class DealDetailsScreen extends GetView<DealDetailsController> {
                     Text(deal.storeAddress,
                         style: TextStyle(
                             fontSize: 13, color: Colors.grey.shade500)),
+                    if (deal.isFlashSale) ...[
+                      const SizedBox(height: 12),
+                      Obx(() {
+                        final isExpired = controller.isExpired.value;
+                        return Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: isExpired
+                                ? Colors.grey.shade100
+                                : Colors.red.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isExpired
+                                  ? Colors.grey.shade300
+                                  : Colors.red.shade200,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                isExpired
+                                    ? Icons.timer_off_outlined
+                                    : Icons.bolt,
+                                color: isExpired
+                                    ? Colors.grey.shade600
+                                    : Colors.red.shade700,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                isExpired
+                                    ? 'Flash sale ended'
+                                    : 'Flash sale ends in: ',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                  color: isExpired
+                                      ? Colors.grey.shade700
+                                      : Colors.red.shade700,
+                                ),
+                              ),
+                              if (!isExpired)
+                                CountdownText(
+                                  endsAt: deal.flashSaleEndsAt!,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13,
+                                    color: Colors.red.shade700,
+                                  ),
+                                  onExpired: () => controller.markExpired(),
+                                ),
+                            ],
+                          ),
+                        );
+                      }),
+                    ],
                     const SizedBox(height: 16),
                     Row(
                       children: [
@@ -151,11 +209,20 @@ class DealDetailsScreen extends GetView<DealDetailsController> {
           color: Colors.white,
           child: SizedBox(
             width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: controller.addToCart,
-              icon: const Icon(Icons.add_shopping_cart),
-              label: const Text('Add to bag'),
-            ),
+            child: Obx(() {
+              final isExpired = controller.isExpired.value;
+              return FilledButton.icon(
+                onPressed: isExpired ? null : controller.addToCart,
+                icon: Icon(isExpired ? Icons.block : Icons.add_shopping_cart),
+                label: Text(isExpired ? 'Deal expired' : 'Add to bag'),
+                style: isExpired
+                    ? FilledButton.styleFrom(
+                        backgroundColor: Colors.grey.shade300,
+                        foregroundColor: Colors.grey.shade600,
+                      )
+                    : null,
+              );
+            }),
           ),
         ),
       );

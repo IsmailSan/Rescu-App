@@ -60,11 +60,17 @@ class DealModel {
           json['pickupWindow'] as Map<String, dynamic>? ?? {}),
       flashSaleEndsAt: json['flashSaleEndsAt'] == null
           ? null
-          : DateTime.parse(json['flashSaleEndsAt'] as String),
+          : DateTime.parse(json['flashSaleEndsAt'] as String).toLocal(),
     );
   }
 
   bool get isFlashSale => flashSaleEndsAt != null;
+
+  bool get isExpired {
+    final endsAt = flashSaleEndsAt;
+    if (endsAt == null) return false;
+    return DateTime.now().isAfter(endsAt);
+  }
 
   int get discountPercent =>
       originalPrice <= 0 ? 0 : (100 - (price / originalPrice * 100)).round();

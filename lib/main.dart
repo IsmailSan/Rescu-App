@@ -8,6 +8,7 @@ import 'repository/store_repo.dart';
 import 'routes/routes.dart';
 import 'service/analytics_service.dart';
 import 'service/cart_service.dart';
+import 'service/countdown_service.dart';
 import 'service/fake_api_service.dart';
 
 Future<void> main() async {
@@ -20,6 +21,7 @@ Future<void> initDependencies() async {
   await Get.putAsync(() => FakeApiService().init(), permanent: true);
   Get.put(AnalyticsService(), permanent: true);
   Get.put(CartService(), permanent: true);
+  Get.put(CountdownService(), permanent: true);
   Get.lazyPut(() => DealRepo(api: Get.find()), fenix: true);
   Get.lazyPut(() => StoreRepo(api: Get.find()), fenix: true);
   Get.lazyPut(() => OrderRepo(api: Get.find()), fenix: true);
