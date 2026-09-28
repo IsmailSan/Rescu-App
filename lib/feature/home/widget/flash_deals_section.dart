@@ -5,6 +5,7 @@ import '../../../app_config.dart';
 import '../../../model/deal_model.dart';
 import '../../../routes/routes.dart';
 import '../../shared_widget/countdown_text.dart';
+import '../../shared_widget/deal_impression_tracker.dart';
 import '../../shared_widget/the_network_image.dart';
 
 /// Horizontal flash-sale rail with live per-deal countdown timers.
@@ -47,7 +48,7 @@ class _FlashDealsSectionState extends State<FlashDealsSection>
             padding: const EdgeInsets.symmetric(horizontal: 12),
             itemCount: deals.length,
             itemBuilder: (context, index) {
-              return _FlashDealRailCard(deal: deals[index]);
+              return _FlashDealRailCard(deal: deals[index], position: index);
             },
           ),
         ),
@@ -58,7 +59,8 @@ class _FlashDealsSectionState extends State<FlashDealsSection>
 
 class _FlashDealRailCard extends StatefulWidget {
   final DealModel deal;
-  const _FlashDealRailCard({required this.deal});
+  final int position;
+  const _FlashDealRailCard({required this.deal, required this.position});
 
   @override
   State<_FlashDealRailCard> createState() => _FlashDealRailCardState();
@@ -82,124 +84,129 @@ class _FlashDealRailCardState extends State<_FlashDealRailCard> {
   @override
   Widget build(BuildContext context) {
     final deal = widget.deal;
-    return ValueListenableBuilder<bool>(
-      valueListenable: _isExpired,
-      builder: (context, isExpired, _) {
-        return SizedBox(
-          width: 200,
-          child: Card(
-            color: Colors.white,
-            elevation: 0.5,
-            clipBehavior: Clip.antiAlias,
-            margin: const EdgeInsets.symmetric(horizontal: 4),
-            child: InkWell(
-              onTap: isExpired
-                  ? () {
-                      if (Get.context != null && Get.key.currentState?.overlay != null) {
-                        Get.snackbar(
-                          'Deal expired',
-                          'This flash deal has ended.',
-                          snackPosition: SnackPosition.BOTTOM,
-                          duration: const Duration(seconds: 2),
-                        );
+    return DealImpressionTracker(
+      dealId: deal.id,
+      source: 'flash_rail',
+      position: widget.position,
+      child: ValueListenableBuilder<bool>(
+        valueListenable: _isExpired,
+        builder: (context, isExpired, _) {
+          return SizedBox(
+            width: 200,
+            child: Card(
+              color: Colors.white,
+              elevation: 0.5,
+              clipBehavior: Clip.antiAlias,
+              margin: const EdgeInsets.symmetric(horizontal: 4),
+              child: InkWell(
+                onTap: isExpired
+                    ? () {
+                        if (Get.context != null && Get.key.currentState?.overlay != null) {
+                          Get.snackbar(
+                            'Deal expired',
+                            'This flash deal has ended.',
+                            snackPosition: SnackPosition.BOTTOM,
+                            duration: const Duration(seconds: 2),
+                          );
+                        }
                       }
-                    }
-                  : () => Get.toNamed(
-                        Routes.dealRoute(deal.id, source: 'flash_rail'),
-                        arguments: deal,
+                    : () => Get.toNamed(
+                          Routes.dealRoute(deal.id, source: 'flash_rail'),
+                          arguments: deal,
+                        ),
+                child: Opacity(
+                  opacity: isExpired ? 0.6 : 1.0,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TheNetworkImage(
+                        url: deal.imageUrl,
+                        height: 90,
+                        width: double.infinity,
                       ),
-              child: Opacity(
-                opacity: isExpired ? 0.6 : 1.0,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    TheNetworkImage(
-                      url: deal.imageUrl,
-                      height: 90,
-                      width: double.infinity,
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            deal.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 13, fontWeight: FontWeight.w600),
-                          ),
-                          Text(
-                            deal.storeName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                                fontSize: 11.5, color: Colors.grey.shade600),
-                          ),
-                          const SizedBox(height: 6),
-                          Row(
-                            children: [
-                              Text(
-                                '฿${deal.price.toStringAsFixed(0)}',
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: AppConfig.primaryGreen),
-                              ),
-                              const Spacer(),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: isExpired
-                                      ? Colors.grey.shade200
-                                      : Colors.red.shade50,
-                                  borderRadius: BorderRadius.circular(4),
+                      Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              deal.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 13, fontWeight: FontWeight.w600),
+                            ),
+                            Text(
+                              deal.storeName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 11.5, color: Colors.grey.shade600),
+                            ),
+                            const SizedBox(height: 6),
+                            Row(
+                              children: [
+                                Text(
+                                  '฿${deal.price.toStringAsFixed(0)}',
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: AppConfig.primaryGreen),
                                 ),
-                                child: isExpired
-                                    ? Text(
-                                        'Expired',
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                          color: Colors.grey.shade600,
-                                        ),
-                                      )
-                                    : Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(
-                                            Icons.timer_outlined,
-                                            size: 11,
-                                            color: Colors.red.shade700,
+                                const Spacer(),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: isExpired
+                                        ? Colors.grey.shade200
+                                        : Colors.red.shade50,
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: isExpired
+                                      ? Text(
+                                          'Expired',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.grey.shade600,
                                           ),
-                                          const SizedBox(width: 2),
-                                          CountdownText(
-                                            endsAt: deal.flashSaleEndsAt!,
-                                            style: TextStyle(
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w600,
+                                        )
+                                      : Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(
+                                              Icons.timer_outlined,
+                                              size: 11,
                                               color: Colors.red.shade700,
                                             ),
-                                            onExpired: () {
-                                              _isExpired.value = true;
-                                            },
-                                          ),
-                                        ],
-                                      ),
-                              ),
-                            ],
-                          ),
-                        ],
+                                            const SizedBox(width: 2),
+                                            CountdownText(
+                                              endsAt: deal.flashSaleEndsAt!,
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w600,
+                                                color: Colors.red.shade700,
+                                              ),
+                                              onExpired: () {
+                                                _isExpired.value = true;
+                                              },
+                                            ),
+                                          ],
+                                        ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 }

@@ -5,14 +5,21 @@ import '../../app_config.dart';
 import '../../model/deal_model.dart';
 import '../../routes/routes.dart';
 import 'countdown_text.dart';
+import 'deal_impression_tracker.dart';
 import 'the_network_image.dart';
 
 /// Deal card used in the home feed and search results.
 class DealCard extends StatefulWidget {
   final DealModel deal;
   final String source;
+  final int position;
 
-  const DealCard({super.key, required this.deal, this.source = 'home'});
+  const DealCard({
+    super.key,
+    required this.deal,
+    this.source = 'home_feed',
+    this.position = 0,
+  });
 
   @override
   State<DealCard> createState() => _DealCardState();
@@ -45,9 +52,13 @@ class _DealCardState extends State<DealCard> {
   @override
   Widget build(BuildContext context) {
     final deal = widget.deal;
-    return ValueListenableBuilder<bool>(
-      valueListenable: _isExpired,
-      builder: (context, isExpired, _) {
+    return DealImpressionTracker(
+      dealId: deal.id,
+      source: widget.source,
+      position: widget.position,
+      child: ValueListenableBuilder<bool>(
+        valueListenable: _isExpired,
+        builder: (context, isExpired, _) {
         return Card(
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           clipBehavior: Clip.hardEdge,
@@ -231,6 +242,7 @@ class _DealCardState extends State<DealCard> {
           ),
         );
       },
-    );
-  }
+    ),
+  );
+}
 }

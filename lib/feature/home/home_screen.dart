@@ -113,7 +113,12 @@ class HomeScreen extends GetView<HomeController> {
                   );
                 }
                 final deal = deals[index - 2];
-                return DealCard(key: ValueKey(deal.id), deal: deal);
+                return DealCard(
+                  key: ValueKey(deal.id),
+                  deal: deal,
+                  source: 'home_feed',
+                  position: index - 2,
+                );
               },
             );
           }),

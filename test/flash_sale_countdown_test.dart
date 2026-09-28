@@ -169,6 +169,7 @@ void main() {
       expect(find.text('00:00'), findsOneWidget);
       expect(expiredFired, isTrue);
 
+      countdownService.onClose();
       Get.reset();
     });
   });

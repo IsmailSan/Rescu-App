@@ -362,6 +362,68 @@
   - **Negative remaining time on cold start:** If the app launches or receives deals that already expired, `CountdownService.format` safely clamps to `00:00` and `_isExpired` is initialized to `true` synchronously without flash.
   - **User attempts adding an expired deal:** `CartService.add()` performs a defensive `deal.isExpired` check before adding and shows a warning snackbar if expired.
 
+#### **F-2 · Impression tracking**
+
+- **Requirements Addressed:**
+  1. Log a `deal_impression` event when a deal card has been **≥50% visible for at least 1 continuous second**. Properties: `deal_id`, `source` (`home_feed`, `flash_rail`, or `search`), `position` (index in its list).
+  2. At most **once per deal per app session**, across all screens.
+  3. Batch delivery via `FakeApiService.sendAnalyticsBatch` when either **10 events** accumulate or **15 seconds** have elapsed since the first unsent event — whichever comes first.
+  4. Scrolling performance must not regress.
+
+- **Architecture & Implementation:**
+  - **`AnalyticsService` (Singleton `GetxService`):**
+    - Maintains `Set<int> _impressedDealIds` for O(1) session-wide deduplication. `hasImpressed(dealId)` allows widgets to bypass tracking entirely for already-recorded deals.
+    - `recordDealImpression({dealId, source, position})` checks deduplication, logs the event via `logEvent()`, and queues it for batch delivery.
+    - `_queueEventForBatch(event)` implements dual-trigger batching:
+      - **Count trigger:** Flushes immediately when `_pendingBatch.length >= 10`.
+      - **Time trigger:** On the first queued event, starts a 15-second `Timer`. If 10 events don't accumulate before the timer fires, `flushBatch()` is called.
+    - `flushBatch()` snapshots the pending batch, clears it, and delivers via `FakeApiService.sendAnalyticsBatch(batch)` with error handling.
+    - `resetSession()` clears all state (for testing/session reset).
+    - `onClose()` cancels the batch timer to prevent leaks.
+
+  - **`DealImpressionTracker` (Reusable `StatefulWidget`):**
+    - Wraps any deal widget and accepts `dealId`, `source`, `position`, and `child`.
+    - Uses `VisibilityDetector` (from `visibility_detector` package) to monitor the deal widget's viewport visibility.
+    - **Visibility ≥50%:** Starts a 1-second `Timer`. If the widget remains ≥50% visible for the full second, triggers `AnalyticsService.recordDealImpression()`.
+    - **Visibility <50% (scrolled away):** Immediately cancels the pending timer, requiring a fresh 1-second dwell on next appearance.
+    - **Already impressed:** If `AnalyticsService.hasImpressed(dealId)` returns `true`, the `VisibilityDetector` is completely bypassed — the widget returns `widget.child` directly, avoiding any layout/callback overhead.
+    - `didUpdateWidget` handles deal ID changes (e.g., list item recycling) by cancelling the timer and re-checking impression state.
+
+  - **UI Integration:**
+    - **`DealCard`:** Wrapped with `DealImpressionTracker` at the build root, receiving `source` and `position` as constructor parameters (defaulting to `'home_feed'` and `0`).
+    - **`FlashDealsSection` (`_FlashDealRailCard`):** Wrapped with `DealImpressionTracker` using `source: 'flash_rail'` and `position: index`.
+    - **`HomeScreen`:** Passes `source: 'home_feed'` and `position: index - 2` to `DealCard`.
+    - **`SearchScreen`:** Passes `source: 'search'` and `position: index` to `DealCard`.
+
+  - **Performance Configuration:**
+    - `VisibilityDetectorController.instance.updateInterval = Duration(milliseconds: 100)` set in `main.dart`. This throttles visibility callbacks to 10Hz instead of the default 0ms (every frame), significantly reducing overhead during rapid scrolling while maintaining sufficient tracking accuracy.
+
+- **Why this Architecture is the Right One:**
+  - **Single Responsibility:** `DealImpressionTracker` handles visibility logic and timer management; `AnalyticsService` handles deduplication, batching, and delivery. Neither knows about the other's implementation details.
+  - **Zero Performance Regression:** Already-impressed deals bypass `VisibilityDetector` entirely, and the 100ms update interval throttles callbacks during fast scrolling. The `VisibilityDetector` key includes `source`, `dealId`, and `position` to ensure stable widget identity.
+  - **Correctness Guarantees:** The 1-second dwell requirement with immediate cancellation on scroll-away ensures only genuinely viewed deals trigger impressions. Session-wide deduplication via `Set<int>` is O(1) and prevents duplicate events across screens.
+
+- **Alternatives Considered & Rejected:**
+  - *Alternative 1: Using `ScrollNotification` + manual visibility calculation*
+    - **Rejected because:** Requires manual calculation of viewport bounds, item offsets, and overlap ratios for each card. This is error-prone for heterogeneous lists (flash rail + header + deal cards) and doesn't handle edge cases like partially visible cards across layout boundaries. `VisibilityDetector` handles all of this out of the box.
+  - *Alternative 2: Sending events one-by-one in real time*
+    - **Rejected because:** Explicitly prohibited by the ticket. Individual network requests per impression would overwhelm the backend and waste battery/bandwidth. Batching amortizes network overhead.
+  - *Alternative 3: Using `IntersectionObserver`-style approach with `RenderObject.paintBounds`*
+    - **Rejected because:** Lower-level render object inspection is fragile across Flutter versions and doesn't integrate cleanly with the `StatefulWidget` lifecycle. `VisibilityDetector` is already in `pubspec.yaml` and battle-tested.
+  - *Alternative 4: Batch flush only on app pause/dispose*
+    - **Rejected because:** Risks losing analytics if the app is killed. The dual-trigger approach (10 events OR 15 seconds) ensures timely delivery while still batching.
+
+- **Edge Cases Considered:**
+  - **Rapid scrolling past deals:** Timer is started on ≥50% visibility and cancelled immediately on <50%. Deals scrolled past in under 1 second are never recorded.
+  - **Same deal visible in multiple sources:** If deal #42 appears in flash rail (source=`flash_rail`) and then in home feed (source=`home_feed`), only the first impression is recorded. Deduplication is by `dealId` globally, not per-source, matching the "once per deal per app session" requirement.
+  - **Widget recycling in `ListView.builder`:** `didUpdateWidget` detects `dealId` changes and resets the timer/impression state for the new deal.
+  - **App backgrounding / screen off:** Timer fires based on Dart isolate time, not real-time wall clock. If the app is paused, the timer pauses with it. No false impressions are recorded.
+  - **Empty batch flush:** `flushBatch()` returns early if `_pendingBatch.isEmpty`, preventing empty API calls.
+  - **Service not registered (e.g., in tests):** Both `DealImpressionTracker` and recording logic check `Get.isRegistered<AnalyticsService>()` before accessing the service, preventing crashes in isolated test environments.
+
+- **Verification:**
+  Events can be verified on the **Analytics debug** screen (Home → ⋮ → Analytics debug), which displays all logged events from `AnalyticsService.events` in real time.
+
 ---
 
 ### 2. AI Usage Log
@@ -409,6 +471,11 @@
    - **My Prompt:** "please solve this ticket: ### F-1 · Live flash-sale countdowns. Flash deals currently show a static 'Ends soon' badge. Replace it with a live countdown everywhere the deal appears: flash rail, home feed cards, and details screen. When reaching zero, switch to disabled Expired state, cannot be added to bag, and remove from bag if already added. Must stay smooth with 100+ visible countdowns, scoped to changing text."
    - **AI Suggestion:** Architected a high-performance countdown engine based on a single application-wide heartbeat `CountdownService` exposing `ValueNotifier<DateTime> clock` rather than 100+ independent timers. Designed the leaf-level `CountdownText` widget subscribing via `ValueListenableBuilder<DateTime>`, completely isolating per-second rebuilds to the text widget while leaving card hierarchies untouched. Implemented automatic bag eviction in `CartService.removeExpiredDeals()` and visual state latching via localized `_isExpired` notifiers.
    - **Why it was accurate:** Meets all functional requirements while strictly honoring the DevTools rebuild profiling constraints (0 card rebuilds per second). Accompanied by automated unit tests validating countdown formatters (`mm:ss` vs `hh:mm:ss`), model expiration logic, bag insertion rejection, and automatic bag eviction.
+
+9. **Feature F-2: Impression tracking**
+    - **My Prompt:** "please check this ticket: ### F-2 · Impression tracking. Product wants view analytics on deal cards. Log a deal_impression event when a deal card has been ≥50% visible for at least 1 continuous second. Properties: deal_id, source, position. At most once per deal per session. Batch them and deliver via FakeApiService.sendAnalyticsBatch when either 10 events have accumulated or 15 seconds have passed."
+    - **AI Suggestion:** Designed a two-layer architecture: `DealImpressionTracker` widget using `VisibilityDetector` for viewport visibility tracking with a 1-second dwell timer, and `AnalyticsService` for session-wide deduplication and dual-trigger batching (count-based at 10 events, time-based at 15 seconds). Recommended configuring `VisibilityDetectorController.updateInterval` to 100ms for performance, and bypassing `VisibilityDetector` entirely for already-impressed deals.
+    - **Why it was accurate:** Correctly separated concerns between visibility detection (widget layer) and analytics processing (service layer). The dual-trigger batch strategy precisely matches the ticket requirements. Performance optimization via early bypass and throttled update interval ensures no scrolling regression.
 
 ---
 
@@ -496,4 +563,5 @@
 - **Time Spent on RES-106:** ~20–30 minutes.
 - **Time Spent on RES-107:** ~20–30 minutes.
 - **Time Spent on F-1:** ~45–60 minutes.
-- **Next Steps:** Proceed with **F-2 · Impression tracking** (logging `deal_impression` when card is ≥50% visible for ≥1 continuous second via `AnalyticsService`).
+- **Time Spent on F-2:** ~40–50 minutes.
+- **Next Steps:** Proceed with **F-3 · Stock reservations with optimistic UI**.

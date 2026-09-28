@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import 'package:visibility_detector/visibility_detector.dart';
+
 import 'app_config.dart';
 import 'repository/deal_repo.dart';
 import 'repository/order_repo.dart';
@@ -13,6 +15,8 @@ import 'service/fake_api_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  VisibilityDetectorController.instance.updateInterval =
+      const Duration(milliseconds: 100);
   await initDependencies();
   runApp(const RescuApp());
 }
