@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../app_config.dart';
+import '../../service/countdown_service.dart';
 import '../shared_widget/the_network_image.dart';
 import 'cart_controller.dart';
 
@@ -56,6 +57,22 @@ class CartScreen extends GetView<CartController> {
                                   fontSize: 13,
                                   color: AppConfig.primaryGreen,
                                   fontWeight: FontWeight.w600)),
+                          if (item.reservation != null)
+                            ValueListenableBuilder<DateTime>(
+                              valueListenable: Get.find<CountdownService>().clock,
+                              builder: (context, now, _) {
+                                final text = item.reservationLeftTextAt(now);
+                                if (text.isEmpty) return const SizedBox.shrink();
+                                return Text(
+                                  text,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppConfig.primaryGreen,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                );
+                              },
+                            ),
                         ],
                       ),
                     ),

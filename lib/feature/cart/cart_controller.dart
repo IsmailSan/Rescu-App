@@ -18,7 +18,7 @@ class CartController extends GetxController {
     isCheckingOut.value = true;
     try {
       final order = await orderRepo.checkout(cartService.items.toList());
-      cartService.clear();
+      await cartService.clear();
       Get.snackbar(
         'Order confirmed',
         'Order #${order.id} — pick up soon!',
@@ -26,11 +26,28 @@ class CartController extends GetxController {
       );
     } on ApiException catch (e) {
       LogService.error('checkout failed', e);
-      Get.snackbar(
-        'Checkout failed',
-        e.message,
-        snackPosition: SnackPosition.BOTTOM,
-      );
+      if (e.statusCode == 410) {
+        final expiredDealNames = cartService.items
+            .where((item) => item.reservation != null && item.reservation!.isExpired)
+            .map((item) => item.deal.name)
+            .toList();
+
+        if (expiredDealNames.isNotEmpty) {
+          await cartService.clear();
+        }
+
+        Get.snackbar(
+          'Reservation expired',
+          'One of your bag items expired before checkout. Please add it again.',
+          snackPosition: SnackPosition.BOTTOM,
+        );
+      } else {
+        Get.snackbar(
+          'Checkout failed',
+          e.message,
+          snackPosition: SnackPosition.BOTTOM,
+        );
+      }
     }
     isCheckingOut.value = false;
   }

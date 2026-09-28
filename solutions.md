@@ -424,6 +424,50 @@
 - **Verification:**
   Events can be verified on the **Analytics debug** screen (Home → ⋮ → Analytics debug), which displays all logged events from `AnalyticsService.events` in real time.
 
+#### **F-3 · Stock reservations with optimistic UI**
+
+- **Root Cause:**
+  - The bag logic was entirely local. `CartService` only kept a list of `CartItemModel`s and a running total; no backend reservation was created when a user added an item.
+  - `CartController.checkout()` sent only the deal id and quantity to `OrderRepo.checkout`, without any `reservationId`, which meant server-side stock protection did not exist in the app flow.
+  - When quantity changed or an item was removed, there was no call to `reserve()` / `releaseReservation()`, so the app could not reconcile optimistic UI with actual stock availability.
+  - There was also no expiry policy for reservations while the user stayed inside the app. A stale reservation could remain in the bag indefinitely unless some explicit cleanup happened.
+
+- **Why this fix is the right one:**
+  - We implemented the reservation flow in `CartService` as a true optimistic + reconcile loop:
+    1. User taps “Add to bag” → item is added immediately to `items` and UI updates instantly.
+    2. `CartService.add()` then calls `OrderRepo.reserve(deal.id, quantity: item.quantity)` in the background.
+    3. If the reservation succeeds, `item.reservation` is stored and the line item shows a live countdown text (e.g. `Reserved 04:52 left`).
+    4. If the reservation fails with `409`, the item is removed from the bag, the quantity is rolled back, and the app shows a clear non-technical message such as “Reservation unavailable”.
+  - We also implemented quantity adjustment correctly:
+    - on increment, the previous reservation is released and a fresh reservation is created for the new quantity;
+    - on decrement, the old reservation is adjusted downward or re-held as needed;
+    - on remove, the reservation is released immediately.
+  - At checkout, we pass `reservationId` in the payload and handle `410` gracefully by clearing expired reservations from the bag and notifying the user to add items again.
+  - For expiry while the user is still in the app, we chose the product behavior of automatic removal with a visible snackbar. This is safer than silently keeping stale items in the bag because it prevents a user from trying to pay for stock they no longer hold. It also aligns with user expectations: if the hold disappears, the bag should disappear with it.
+
+- **Alternatives Considered and Rejected:**
+  - *Alternative 1: Block the UI until the reservation request finishes*  
+    **Rejected because:** This would make the app feel frozen and contradict the optimistic UX requirement. The product specifically asks for instant feedback; waiting for the backend would be a worse experience.
+  - *Alternative 2: Keep the item in the bag even after reservation fails*  
+    **Rejected because:** That would produce false inventory promises and directly violates the contract of a reservation. The item must either hold stock or be removed.
+  - *Alternative 3: Do nothing when a reservation expires while the user is still in the app*  
+    **Rejected because:** The user would believe they still have a valid hold while the backend has already released the stock. This creates stale UI and likely failed checkouts later. We prefer immediate cleanup and visible notice.
+
+- **Edge Cases Considered:**
+  - **Stock contention (`409`) on add:** The optimistic item is rolled back immediately and removed from the bag.
+  - **Incrementing quantity when stock is nearly exhausted:** The app checks `quantityLeft` and prevents overshooting the available stock.
+  - **Reservation expires while the user stays on the bag page:** A periodic expiration sweep removes expired items and triggers a snackbar.
+  - **Checkout with expired reservation:** `410` is treated as a real checkout failure; item is removed from the bag and the user is asked to add it again.
+  - **Decrease/remove item before reservation expires:** The reservation is released or adjusted in time, so stock is not wasted.
+  - **Edge cases we decided not to handle:**
+    - We did not add a full “restore last item automatically” flow after expiry.
+    - We did not implement server-side reservation queueing or optimistic retry loops for repeated 409s; the ticket only requires a clear rollback and user-visible notice.
+
+- **Decision on reservation expiry during active app use:**
+  - When a reservation expires while the user is still in the app, we auto-remove that item from the cart and show a snackbar like “Reservation expired — stock was released”.
+  - We did not try to keep an expired item “ghosted” in the cart because that would be misleading and would force the user to discover the problem too late at checkout. The product behavior is to keep the bag state truthful to the server state.
+  - This is also low-risk for the user: they are not charged or blocked, and the UI remains honest about real stock availability.
+
 ---
 
 ### 2. AI Usage Log
@@ -476,6 +520,11 @@
     - **My Prompt:** "please check this ticket: ### F-2 · Impression tracking. Product wants view analytics on deal cards. Log a deal_impression event when a deal card has been ≥50% visible for at least 1 continuous second. Properties: deal_id, source, position. At most once per deal per session. Batch them and deliver via FakeApiService.sendAnalyticsBatch when either 10 events have accumulated or 15 seconds have passed."
     - **AI Suggestion:** Designed a two-layer architecture: `DealImpressionTracker` widget using `VisibilityDetector` for viewport visibility tracking with a 1-second dwell timer, and `AnalyticsService` for session-wide deduplication and dual-trigger batching (count-based at 10 events, time-based at 15 seconds). Recommended configuring `VisibilityDetectorController.updateInterval` to 100ms for performance, and bypassing `VisibilityDetector` entirely for already-impressed deals.
     - **Why it was accurate:** Correctly separated concerns between visibility detection (widget layer) and analytics processing (service layer). The dual-trigger batch strategy precisely matches the ticket requirements. Performance optimization via early bypass and throttled update interval ensures no scrolling regression.
+
+10. **Feature F-3: Stock reservations with optimistic UI**
+    - **My Prompt:** "please solve this ticket: ### F-3 · Stock reservations with optimistic UI. The bag is local only; adding should reserve stock immediately, show countdowns, release/reserve on quantity changes, and handle expired reservations gracefully."
+    - **AI Suggestion:** Proposed an optimistic reservation flow in `CartService`: add the item immediately, call `reserveDeal()` in the background, store the returned `ReservationModel`, render live countdowns per item, and on failure rollback the item with a clear non-technical snackbar. Also recommended releasing reservations on decrement/remove and passing `reservationId` on checkout with a `410` recovery path.
+    - **Why it was accurate:** This matches the actual backend contract in `FakeApiService.reserveDeal()` / `releaseReservation()` and the product requirement for optimistic UI. The fix is correct because it preserves the user experience while ensuring the bag state stays truthful to server-side stock availability; the expiry policy matches the product decision to auto-remove stale items instead of leaving ghost reservations visible.
 
 ---
 
@@ -564,4 +613,5 @@
 - **Time Spent on RES-107:** ~20–30 minutes.
 - **Time Spent on F-1:** ~45–60 minutes.
 - **Time Spent on F-2:** ~40–50 minutes.
+- **Time Spent on F-3:** ~40–50 minutes.
 - **Next Steps:** Proceed with **F-3 · Stock reservations with optimistic UI**.

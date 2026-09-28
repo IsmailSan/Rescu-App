@@ -5,8 +5,12 @@ import 'package:rescu/feature/shared_widget/countdown_text.dart';
 import 'package:rescu/model/cart_item_model.dart';
 import 'package:rescu/model/deal_model.dart';
 import 'package:rescu/model/pickup_window_model.dart';
+import 'package:rescu/model/reservation_model.dart';
+import 'package:rescu/repository/order_repo.dart';
+import 'package:rescu/service/api_exception.dart';
 import 'package:rescu/service/cart_service.dart';
 import 'package:rescu/service/countdown_service.dart';
+import 'package:rescu/service/fake_api_service.dart';
 
 DealModel createDeal({
   required int id,
@@ -37,8 +41,59 @@ DealModel createDeal({
   );
 }
 
+class _FailingReservationApi extends FakeApiService {
+  @override
+  Future<Map<String, dynamic>> reserveDeal(int dealId, {int quantity = 1}) async {
+    throw const ApiException('Could not reserve: someone grabbed the last one. Try again.', statusCode: 409);
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('F-3 · Stock reservations with optimistic UI', () {
+    test('CartService rolls back the bag when reservation fails', () async {
+      final api = _FailingReservationApi();
+      await api.init();
+      final cart = CartService(orderRepo: OrderRepo(api: api));
+      final deal = createDeal(id: 42, name: 'Cinnamon Roll');
+
+      await cart.add(deal);
+
+      expect(cart.items, isEmpty);
+      expect(cart.itemCount.value, 0);
+    });
+
+    test('CartService confirms a reservation and shows a remaining time label', () async {
+      final api = FakeApiService();
+      await api.init();
+      final cart = CartService(orderRepo: OrderRepo(api: api));
+      final deal = createDeal(id: 43, name: 'Sesame Bun');
+
+      await cart.add(deal);
+
+      expect(cart.items.length, 1);
+      expect(cart.items.first.reservation, isNotNull);
+      expect(cart.items.first.reservationLeftText, contains('Reserved'));
+
+      cart.onClose();
+    });
+
+    test('CartItemModel computes reservation countdown from a supplied clock time', () {
+      final deal = createDeal(id: 44, name: 'Mochi Bun');
+      final now = DateTime(2026, 1, 2, 10, 0, 0);
+      final reservation = ReservationModel(
+        id: 'res_1',
+        dealId: deal.id,
+        quantity: 1,
+        expiresAt: now.add(const Duration(minutes: 1, seconds: 30)),
+      );
+      final item = CartItemModel(deal: deal, reservation: reservation);
+
+      expect(item.reservationLeftTextAt(now), contains('01:30'));
+      expect(item.reservationLeftTextAt(now.add(const Duration(minutes: 1, seconds: 31))), contains('Expired'));
+    });
+  });
 
   group('F-1 · Live flash-sale countdowns', () {
     test('CountdownService.format formats mm:ss below 1 hour and hh:mm:ss above 1 hour', () {
